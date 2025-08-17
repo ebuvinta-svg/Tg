@@ -834,65 +834,59 @@ def start_command(message):
     user = message.from_user
     db.add_user(user.id, user.username, user.first_name, user.last_name)
     
-    welcome_text = f"""
-👋 **Добро пожаловать, {user.first_name}!**
+    welcome_text = f"""👋 Добро пожаловать, {user.first_name}!
 
 Этот бот поможет вам управлять несколькими чатами и отправлять сообщения сразу во все подключенные чаты.
 
-🔧 **Основные функции:**
+🔧 Основные функции:
 • Подключение неограниченного количества чатов
 • Умная массовая рассылка с контролем скорости
 • Поддержка всех типов медиа (фото, видео, документы)
 • Детальная аналитика и статистика
 • Автоматический мониторинг состояния чатов
 
-🚀 **Начать работу:**
+🚀 Начать работу:
 1. Добавьте бота в нужные чаты как администратора
 2. Используйте "➕ Добавить чат" для подключения
 3. Отправляйте сообщения через "📝 Отправить сообщение"
 
-💡 **Важно:** Все управление происходит только в личных сообщениях с ботом!
-"""
+💡 Важно: Все управление происходит только в личных сообщениях с ботом!"""
     
     bot.send_message(message.chat.id, welcome_text, 
-                    reply_markup=create_main_keyboard(), 
-                    parse_mode='Markdown')
+                    reply_markup=create_main_keyboard())
 
 @bot.message_handler(commands=['help'])
 @private_chat_only
 def help_command(message):
     """Обработчик команды /help"""
-    help_text = """
-🆘 **Помощь по использованию бота:**
+    help_text = """🆘 Помощь по использованию бота:
 
-📝 **Отправить сообщение** - отправляет ваше сообщение во все подключенные чаты
-📋 **Мои чаты** - показывает список ваших чатов с детальной информацией
-➕ **Добавить чат** - добавляет новый чат для рассылки
-❌ **Удалить чат** - удаляет чат из списка рассылки
-🔍 **Проверить чаты** - проверяет статус бота во всех чатах
-📊 **Статистика** - показывает детальную статистику использования
-⚙️ **Настройки** - дополнительные настройки бота
-ℹ️ **Помощь** - показывает это сообщение
+📝 Отправить сообщение - отправляет ваше сообщение во все подключенные чаты
+📋 Мои чаты - показывает список ваших чатов с детальной информацией
+➕ Добавить чат - добавляет новый чат для рассылки
+❌ Удалить чат - удаляет чат из списка рассылки
+🔍 Проверить чаты - проверяет статус бота во всех чатах
+📊 Статистика - показывает детальную статистику использования
+⚙️ Настройки - дополнительные настройки бота
+ℹ️ Помощь - показывает это сообщение
 
-💡 **Как добавить чат:**
+💡 Как добавить чат:
 1. Нажмите "➕ Добавить чат"
 2. Добавьте бота в нужный чат как администратора
 3. Отправьте ID чата или перешлите сообщение из чата
 
-🎯 **Способы получения ID чата:**
+🎯 Способы получения ID чата:
 • Перешлите любое сообщение из чата боту
 • Используйте @userinfobot в целевом чате
 • Добавьте @RawDataBot в чат временно
 
-⚠️ **Важно:** 
+⚠️ Важно: 
 • Бот должен быть администратором в чатах для отправки сообщений
 • Все управление происходит только в личных сообщениях
-• В групповых чатах бот не реагирует на команды
-"""
+• В групповых чатах бот не реагирует на команды"""
     
     bot.send_message(message.chat.id, help_text, 
-                    reply_markup=create_main_keyboard(), 
-                    parse_mode='Markdown')
+                    reply_markup=create_main_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == "📋 Мои чаты")
 @private_chat_only
@@ -939,45 +933,42 @@ def add_chat_request(message):
     """Запрос на добавление чата"""
     user_states[message.from_user.id] = UserStates.WAITING_FOR_CHAT_ID
     
-    instruction_text = """
-➕ **Добавление нового чата**
+    instruction_text = """➕ Добавление нового чата
 
-🔧 **Пошаговая инструкция:**
+🔧 Пошаговая инструкция:
 
-1️⃣ **Добавьте бота в чат:**
+1️⃣ Добавьте бота в чат:
    • Откройте нужный чат/канал
    • Добавьте этого бота в участники
    • Назначьте бота администратором
 
-2️⃣ **Права администратора:**
+2️⃣ Права администратора:
    ✅ Отправка сообщений (обязательно)
    ✅ Удаление сообщений (рекомендуется)
    ✅ Закрепление сообщений (опционально)
 
-3️⃣ **Отправьте ID чата одним из способов:**
+3️⃣ Отправьте ID чата одним из способов:
 
-🎯 **СПОСОБ 1 (Рекомендуемый):**
+🎯 СПОСОБ 1 (Рекомендуемый):
    • Перешлите любое сообщение из целевого чата сюда
    • Бот автоматически определит ID чата
 
-🎯 **СПОСОБ 2:**
+🎯 СПОСОБ 2:
    • Отправьте ID чата числом
-   • Примеры: `-123456789` или `-1001234567890`
+   • Примеры: -123456789 или -1001234567890
 
-🎯 **СПОСОБ 3:**
+🎯 СПОСОБ 3:
    • Используйте @userinfobot в целевом чате
    • Скопируйте ID и отправьте сюда
 
-💡 **Подсказки:**
+💡 Подсказки:
 • ID групп и каналов всегда отрицательные
 • Можете просто переслать сообщение - это проще всего!
 
-**Отправьте ID чата или перешлите сообщение:**
-"""
+Отправьте ID чата или перешлите сообщение:"""
     
     bot.send_message(message.chat.id, instruction_text, 
-                    reply_markup=create_cancel_keyboard(),
-                    parse_mode='Markdown')
+                    reply_markup=create_cancel_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == "❌ Удалить чат")
 @private_chat_only
@@ -1198,10 +1189,9 @@ def recheck_chat_callback(call):
         
         # Обновляем сообщение
         bot.edit_message_text(
-            f"🔄 **Статус обновлен:**\n\n{status_text}",
+            f"🔄 Статус обновлен:\n\n{status_text}",
             call.message.chat.id,
-            call.message.message_id,
-            parse_mode='Markdown'
+            call.message.message_id
         )
         
     except Exception as e:
@@ -1241,12 +1231,11 @@ def filter_chats_callback(call):
     user_messages[f"{user_id}_filtered"] = filtered_chats
     
     bot.edit_message_text(
-        f"✅ **Фильтр применен: {filter_name}**\n\n"
+        f"✅ Фильтр применен: {filter_name}\n\n"
         f"📊 Выбрано чатов: {len(filtered_chats)}\n\n"
         f"Теперь рассылка будет отправлена только в эти чаты.",
         call.message.chat.id,
-        call.message.message_id,
-        parse_mode='Markdown'
+        call.message.message_id
     )
     
     bot.answer_callback_query(call.id, f"Применен фильтр: {filter_name}")
@@ -1267,17 +1256,15 @@ def back_to_send_callback(call):
     keyboard.add(types.KeyboardButton("❌ Отмена"))
     
     bot.edit_message_text(
-        "↩️ **Возврат к отправке**\n\nВыберите действие:",
+        "↩️ Возврат к отправке\n\nВыберите действие:",
         call.message.chat.id,
-        call.message.message_id,
-        parse_mode='Markdown'
+        call.message.message_id
     )
     
     bot.send_message(
         call.message.chat.id,
-        "✅ **Подтвердите отправку:**",
-        reply_markup=keyboard,
-        parse_mode='Markdown'
+        "✅ Подтвердите отправку:",
+        reply_markup=keyboard
     )
     
     bot.answer_callback_query(call.id, "Возврат к отправке")
@@ -1419,15 +1406,14 @@ def handle_all_messages(message):
             
             bot.send_message(
                 message.chat.id,
-                f"❌ **Ошибка при добавлении чата**\n\n"
-                f"🔍 **Детали:** {error_msg}\n\n"
-                f"🔄 **Что можно сделать:**\n"
+                f"❌ Ошибка при добавлении чата\n\n"
+                f"🔍 Детали: {error_msg}\n\n"
+                f"🔄 Что можно сделать:\n"
                 f"• Проверить правильность ID чата\n"
                 f"• Убедиться, что бот добавлен в чат\n"
                 f"• Попробовать еще раз через несколько минут\n"
                 f"• Обратиться к администратору чата",
-                reply_markup=create_main_keyboard(),
-                parse_mode='Markdown'
+                reply_markup=create_main_keyboard()
             )
         
         user_states.pop(user_id, None)
@@ -1459,29 +1445,27 @@ def handle_all_messages(message):
             if not all_chats:
                 bot.send_message(
                     message.chat.id,
-                    "❌ **У вас нет подключенных чатов**\n\n"
+                    "❌ У вас нет подключенных чатов\n\n"
                     "🔧 Что делать:\n"
                     "• Нажмите '➕ Добавить чат' для добавления\n"
                     "• Добавьте бота в нужные чаты как администратора\n"
                     "• Получите ID чатов и добавьте их в бот",
-                    reply_markup=create_main_keyboard(),
-                    parse_mode='Markdown'
+                    reply_markup=create_main_keyboard()
                 )
             else:
                 admin_count = len([c for c in all_chats if c['bot_is_admin']])
                 bot.send_message(
                     message.chat.id,
-                    f"❌ **Нет чатов для рассылки**\n\n"
-                    f"📊 **Статус ваших чатов:**\n"
+                    f"❌ Нет чатов для рассылки\n\n"
+                    f"📊 Статус ваших чатов:\n"
                     f"• Всего подключено: {len(all_chats)}\n"
                     f"• Бот является админом: {admin_count}\n"
                     f"• Доступно для рассылки: {admin_count}\n\n"
-                    f"🔧 **Решение:**\n"
+                    f"🔧 Решение:\n"
                     f"• Используйте '🔍 Проверить чаты' для обновления\n"
                     f"• Назначьте бота администратором в нужных чатах\n"
                     f"• Проверьте права бота в настройках чатов",
-                    reply_markup=create_main_keyboard(),
-                    parse_mode='Markdown'
+                    reply_markup=create_main_keyboard()
                 )
             user_states.pop(user_id, None)
             return
@@ -1498,7 +1482,7 @@ def handle_all_messages(message):
             chat_groups[chat_type].append(chat)
         
         # Формируем превью с группировкой
-        preview_text = f"📋 **Готово к отправке в {len(user_chats)} чат(ов):**\n\n"
+        preview_text = f"📋 Готово к отправке в {len(user_chats)} чат(ов):\n\n"
         
         for chat_type, chats in chat_groups.items():
             type_emoji = {
@@ -1508,7 +1492,7 @@ def handle_all_messages(message):
                 'private': '👤'
             }.get(chat_type, '💬')
             
-            preview_text += f"{type_emoji} **{ChatHelper.format_chat_type(chat_type)}** ({len(chats)}):\n"
+            preview_text += f"{type_emoji} {ChatHelper.format_chat_type(chat_type)} ({len(chats)}):\n"
             
             for chat in chats[:3]:  # Показываем первые 3 чата каждого типа
                 preview_text += f"• {chat['chat_title']}\n"
@@ -1518,7 +1502,7 @@ def handle_all_messages(message):
             preview_text += "\n"
         
         # Информация о сообщении
-        preview_text += f"📝 **Содержимое:**\n"
+        preview_text += f"📝 Содержимое:\n"
         
         if message.content_type == 'text':
             text_preview = message.text[:150]
@@ -1573,9 +1557,9 @@ def handle_all_messages(message):
         else:
             time_str = f"{estimated_time:.0f}с"
         
-        preview_text += f"\n⏱️ **Примерное время:** {time_str}\n"
-        preview_text += f"📊 **Режим:** Умная рассылка с контролем скорости\n\n"
-        preview_text += "✅ **Подтвердите отправку:**"
+        preview_text += f"\n⏱️ Примерное время: {time_str}\n"
+        preview_text += f"📊 Режим: Умная рассылка с контролем скорости\n\n"
+        preview_text += "✅ Подтвердите отправку:"
         
         user_states[user_id] = UserStates.WAITING_FOR_CONFIRMATION
         
@@ -1588,7 +1572,7 @@ def handle_all_messages(message):
         keyboard.add(types.KeyboardButton("❌ Отмена"))
         
         bot.send_message(message.chat.id, preview_text, 
-                        reply_markup=keyboard, parse_mode='Markdown')
+                        reply_markup=keyboard)
         
     elif user_state == UserStates.WAITING_FOR_CONFIRMATION:
         if message.text in ["✅ Отправить сейчас", "✅ Отправить"]:
@@ -1597,9 +1581,8 @@ def handle_all_messages(message):
             if not original_message:
                 bot.send_message(
                     message.chat.id,
-                    "❌ **Ошибка:** сообщение не найдено. Попробуйте еще раз.",
-                    reply_markup=create_main_keyboard(),
-                    parse_mode='Markdown'
+                    "❌ Ошибка: сообщение не найдено. Попробуйте еще раз.",
+                    reply_markup=create_main_keyboard()
                 )
                 user_states.pop(user_id, None)
                 return
@@ -1609,10 +1592,9 @@ def handle_all_messages(message):
             if not user_chats:
                 bot.send_message(
                     message.chat.id,
-                    "❌ **Нет доступных чатов для рассылки**\n\n"
+                    "❌ Нет доступных чатов для рассылки\n\n"
                     "Возможно, статус чатов изменился. Проверьте чаты и попробуйте снова.",
-                    reply_markup=create_main_keyboard(),
-                    parse_mode='Markdown'
+                    reply_markup=create_main_keyboard()
                 )
                 user_states.pop(user_id, None)
                 user_messages.pop(user_id, None)
@@ -1621,11 +1603,10 @@ def handle_all_messages(message):
             # Создаем сообщение о начале рассылки
             status_message = bot.send_message(
                 message.chat.id,
-                f"🚀 **Запускаю умную рассылку...**\n\n"
+                f"🚀 Запускаю умную рассылку...\n\n"
                 f"📋 Чатов для обработки: {len(user_chats)}\n"
                 f"📊 Режим: Контроль скорости активен\n"
-                f"⏱️ Начало: {datetime.now().strftime('%H:%M:%S')}",
-                parse_mode='Markdown'
+                f"⏱️ Начало: {datetime.now().strftime('%H:%M:%S')}"
             )
             
             # Запускаем рассылку через BroadcastManager
@@ -1641,16 +1622,15 @@ def handle_all_messages(message):
             # Отправляем главное меню
             bot.send_message(
                 message.chat.id,
-                "📤 **Рассылка запущена в фоновом режиме!**\n\n"
+                "📤 Рассылка запущена в фоновом режиме!\n\n"
                 "Вы получите уведомление о завершении.\n"
                 "Можете продолжать пользоваться ботом.",
-                reply_markup=create_main_keyboard(),
-                parse_mode='Markdown'
+                reply_markup=create_main_keyboard()
             )
             
         elif message.text == "⚙️ Настройки рассылки":
             # Показываем настройки рассылки
-            settings_text = "⚙️ **Настройки рассылки:**\n\n"
+            settings_text = "⚙️ Настройки рассылки:\n\n"
             
             user_chats = db.get_user_chats(user_id, only_admin=True)
             chat_groups = {}
@@ -1660,12 +1640,12 @@ def handle_all_messages(message):
                     chat_groups[chat_type] = []
                 chat_groups[chat_type].append(chat)
             
-            settings_text += "📊 **Доступные фильтры:**\n"
+            settings_text += "📊 Доступные фильтры:\n"
             for chat_type, chats in chat_groups.items():
                 type_name = ChatHelper.format_chat_type(chat_type)
                 settings_text += f"• {type_name}: {len(chats)} чат(ов)\n"
             
-            settings_text += "\n🔧 **Выберите действие:**"
+            settings_text += "\n🔧 Выберите действие:"
             
             keyboard = types.InlineKeyboardMarkup()
             keyboard.add(types.InlineKeyboardButton(
@@ -1682,7 +1662,7 @@ def handle_all_messages(message):
             ))
             
             bot.send_message(message.chat.id, settings_text, 
-                           reply_markup=keyboard, parse_mode='Markdown')
+                           reply_markup=keyboard)
             
         else:
             # Отмена отправки
@@ -1690,10 +1670,9 @@ def handle_all_messages(message):
             user_messages.pop(user_id, None)
             bot.send_message(
                 message.chat.id,
-                "❌ **Отправка отменена**\n\n"
+                "❌ Отправка отменена\n\n"
                 "Сообщение не было отправлено в чаты.",
-                reply_markup=create_main_keyboard(),
-                parse_mode='Markdown'
+                reply_markup=create_main_keyboard()
             )
         
     else:
