@@ -12,10 +12,14 @@ import logging
 import os
 import time
 import threading
+import queue
+import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from telebot import types
 from telebot.apihelper import ApiTelegramException
+from concurrent.futures import ThreadPoolExecutor
+import re
 
 # Настройка логирования
 logging.basicConfig(
@@ -224,16 +228,433 @@ class DatabaseManager:
 # Инициализация базы данных
 db = DatabaseManager(DB_NAME)
 
-# Состояния пользователей
+# Глобальные переменные
 user_states = {}
 user_messages = {}  # Хранение сообщений пользователей для пересылки
+message_queue = queue.Queue()  # Очередь сообщений для рассылки
+active_broadcasts = {}  # Активные рассылки по пользователям
 
 class UserStates:
     """Константы состояний пользователей"""
     WAITING_FOR_MESSAGE = "waiting_for_message"
     WAITING_FOR_CHAT_ID = "waiting_for_chat_id"
     WAITING_FOR_CONFIRMATION = "waiting_for_confirmation"
+    WAITING_FOR_CHAT_FILTER = "waiting_for_chat_filter"
     NORMAL = "normal"
+
+class BroadcastManager:
+    """Класс для управления массовыми рассылками"""
+    
+    def __init__(self):
+        self.active_broadcasts = {}
+        self.executor = ThreadPoolExecutor(max_workers=3)
+        
+    def start_broadcast(self, user_id: int, message, chats: List[Dict], 
+                       status_message_id: int, chat_id: int) -> str:
+        """Запуск массовой рассылки в отдельном потоке"""
+        broadcast_id = f"{user_id}_{int(time.time())}"
+        
+        broadcast_info = {
+            'id': broadcast_id,
+            'user_id': user_id,
+            'status': 'running',
+            'total_chats': len(chats),
+            'sent_count': 0,
+            'failed_count': 0,
+            'start_time': time.time(),
+            'status_message_id': status_message_id,
+            'chat_id': chat_id,
+            'failed_chats': []
+        }
+        
+        self.active_broadcasts[broadcast_id] = broadcast_info
+        
+        # Запускаем рассылку в отдельном потоке
+        future = self.executor.submit(
+            self._execute_broadcast, 
+            broadcast_id, message, chats
+        )
+        
+        return broadcast_id
+    
+    def _execute_broadcast(self, broadcast_id: str, message, chats: List[Dict]):
+        """Выполнение рассылки с контролем скорости"""
+        broadcast_info = self.active_broadcasts.get(broadcast_id)
+        if not broadcast_info:
+            return
+            
+        try:
+            for i, chat in enumerate(chats):
+                if broadcast_info['status'] != 'running':
+                    break
+                    
+                try:
+                    # Отправляем сообщение
+                    self._send_message_to_chat(chat['chat_id'], message)
+                    broadcast_info['sent_count'] += 1
+                    
+                    # Обновляем прогресс каждые 5 сообщений
+                    if (i + 1) % 5 == 0 or i == len(chats) - 1:
+                        self._update_progress(broadcast_id)
+                    
+                    # Задержка между отправками
+                    delay = self._calculate_delay(i, len(chats))
+                    if delay > 0:
+                        time.sleep(delay)
+                        
+                except Exception as e:
+                    broadcast_info['failed_count'] += 1
+                    error_msg = self._format_error(str(e))
+                    broadcast_info['failed_chats'].append({
+                        'chat_title': chat['chat_title'],
+                        'error': error_msg
+                    })
+                    logger.error(f"Failed to send to {chat['chat_id']}: {str(e)}")
+            
+            # Завершаем рассылку
+            broadcast_info['status'] = 'completed'
+            broadcast_info['end_time'] = time.time()
+            self._send_final_report(broadcast_id)
+            
+        except Exception as e:
+            broadcast_info['status'] = 'failed'
+            broadcast_info['error'] = str(e)
+            logger.error(f"Broadcast {broadcast_id} failed: {str(e)}")
+        finally:
+            # Удаляем из активных через 5 минут
+            threading.Timer(300, lambda: self.active_broadcasts.pop(broadcast_id, None)).start()
+    
+    def _send_message_to_chat(self, chat_id: int, message):
+        """Отправка сообщения в чат с обработкой типов"""
+        if message.content_type == 'text':
+            return bot.send_message(chat_id, message.text, parse_mode='HTML')
+        elif message.content_type == 'photo':
+            return bot.send_photo(chat_id, message.photo[-1].file_id, 
+                                caption=message.caption, parse_mode='HTML')
+        elif message.content_type == 'document':
+            return bot.send_document(chat_id, message.document.file_id, 
+                                   caption=message.caption, parse_mode='HTML')
+        elif message.content_type == 'video':
+            return bot.send_video(chat_id, message.video.file_id, 
+                                caption=message.caption, parse_mode='HTML')
+        elif message.content_type == 'audio':
+            return bot.send_audio(chat_id, message.audio.file_id, 
+                                caption=message.caption, parse_mode='HTML')
+        elif message.content_type == 'voice':
+            return bot.send_voice(chat_id, message.voice.file_id)
+        elif message.content_type == 'video_note':
+            return bot.send_video_note(chat_id, message.video_note.file_id)
+        elif message.content_type == 'sticker':
+            return bot.send_sticker(chat_id, message.sticker.file_id)
+        elif message.content_type == 'animation':
+            return bot.send_animation(chat_id, message.animation.file_id,
+                                    caption=message.caption, parse_mode='HTML')
+        else:
+            raise Exception(f"Неподдерживаемый тип сообщения: {message.content_type}")
+    
+    def _calculate_delay(self, current_index: int, total_count: int) -> float:
+        """Вычисление задержки между отправками"""
+        if total_count <= 10:
+            return 0.1  # Минимальная задержка для малых рассылок
+        elif total_count <= 50:
+            return 0.2  # Средняя задержка
+        else:
+            return 0.3  # Максимальная задержка для больших рассылок
+    
+    def _format_error(self, error_str: str) -> str:
+        """Форматирование ошибок для пользователя"""
+        if "Forbidden" in error_str:
+            return "Бот заблокирован или удален"
+        elif "Bad Request" in error_str:
+            if "chat not found" in error_str.lower():
+                return "Чат не найден"
+            elif "not enough rights" in error_str.lower():
+                return "Недостаточно прав"
+            else:
+                return "Неверный запрос"
+        elif "Too Many Requests" in error_str:
+            return "Превышен лимит запросов"
+        elif "Network" in error_str:
+            return "Проблемы с сетью"
+        else:
+            return "Неизвестная ошибка"
+    
+    def _update_progress(self, broadcast_id: str):
+        """Обновление прогресса рассылки"""
+        broadcast_info = self.active_broadcasts.get(broadcast_id)
+        if not broadcast_info:
+            return
+            
+        try:
+            progress = (broadcast_info['sent_count'] + broadcast_info['failed_count']) / broadcast_info['total_chats'] * 100
+            
+            status_text = f"📤 Рассылка в процессе...\n\n"
+            status_text += f"📊 Прогресс: {progress:.1f}%\n"
+            status_text += f"✅ Отправлено: {broadcast_info['sent_count']}\n"
+            status_text += f"❌ Ошибок: {broadcast_info['failed_count']}\n"
+            status_text += f"📋 Всего чатов: {broadcast_info['total_chats']}"
+            
+            bot.edit_message_text(
+                status_text,
+                broadcast_info['chat_id'],
+                broadcast_info['status_message_id']
+            )
+        except Exception as e:
+            logger.error(f"Failed to update progress for {broadcast_id}: {str(e)}")
+    
+    def _send_final_report(self, broadcast_id: str):
+        """Отправка финального отчета"""
+        broadcast_info = self.active_broadcasts.get(broadcast_id)
+        if not broadcast_info:
+            return
+            
+        try:
+            duration = time.time() - broadcast_info['start_time']
+            success_rate = (broadcast_info['sent_count'] / broadcast_info['total_chats']) * 100
+            
+            report = f"✅ Рассылка завершена!\n\n"
+            report += f"📊 Итоговая статистика:\n"
+            report += f"✅ Успешно: {broadcast_info['sent_count']}\n"
+            report += f"❌ Неудачно: {broadcast_info['failed_count']}\n"
+            report += f"📈 Успешность: {success_rate:.1f}%\n"
+            report += f"⏱️ Время выполнения: {duration:.1f} сек\n"
+            
+            if broadcast_info['failed_chats']:
+                report += f"\n🚫 Ошибки:\n"
+                for failed in broadcast_info['failed_chats'][:3]:
+                    report += f"• {failed['chat_title']}: {failed['error']}\n"
+                if len(broadcast_info['failed_chats']) > 3:
+                    report += f"... и еще {len(broadcast_info['failed_chats']) - 3} ошибок"
+            
+            bot.edit_message_text(
+                report,
+                broadcast_info['chat_id'],
+                broadcast_info['status_message_id']
+            )
+            
+            # Сохраняем статистику в базу данных
+            message_content = getattr(user_messages.get(broadcast_info['user_id']), 'text', '[медиа]')
+            chat_ids = [chat['chat_id'] for chat in broadcast_info.get('chats', [])]
+            
+            db.save_message_history(
+                broadcast_info['user_id'],
+                message_content,
+                chat_ids,
+                broadcast_info['sent_count'],
+                broadcast_info['failed_count']
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to send final report for {broadcast_id}: {str(e)}")
+    
+    def get_broadcast_status(self, broadcast_id: str) -> Optional[Dict]:
+        """Получение статуса рассылки"""
+        return self.active_broadcasts.get(broadcast_id)
+    
+    def cancel_broadcast(self, broadcast_id: str) -> bool:
+        """Отмена активной рассылки"""
+        broadcast_info = self.active_broadcasts.get(broadcast_id)
+        if broadcast_info and broadcast_info['status'] == 'running':
+            broadcast_info['status'] = 'cancelled'
+            return True
+        return False
+
+class ChatValidator:
+    """Класс для валидации данных чатов"""
+    
+    @staticmethod
+    def validate_chat_id(chat_id_str: str) -> Tuple[bool, int, str]:
+        """Валидация ID чата"""
+        try:
+            # Убираем пробелы и лишние символы
+            chat_id_str = chat_id_str.strip()
+            
+            # Проверяем формат
+            if not re.match(r'^-?\d+$', chat_id_str):
+                return False, 0, "ID чата должен состоять только из цифр (с минусом для групп)"
+            
+            chat_id = int(chat_id_str)
+            
+            # Проверяем диапазоны
+            if chat_id > 0:
+                # Личные чаты
+                if chat_id > 10**10:
+                    return False, 0, "Слишком большой ID для личного чата"
+            else:
+                # Группы и каналы
+                if chat_id > -1:
+                    return False, 0, "ID группы/канала должен быть отрицательным"
+                if chat_id < -10**12:
+                    return False, 0, "Слишком большой по модулю ID"
+            
+            return True, chat_id, "ID корректен"
+            
+        except ValueError:
+            return False, 0, "ID чата должен быть числом"
+        except Exception as e:
+            return False, 0, f"Ошибка валидации: {str(e)}"
+    
+    @staticmethod
+    def validate_message_content(message) -> Tuple[bool, str]:
+        """Валидация содержимого сообщения"""
+        try:
+            # Проверяем поддерживаемые типы
+            supported_types = [
+                'text', 'photo', 'document', 'video', 'audio', 
+                'voice', 'video_note', 'sticker', 'animation'
+            ]
+            
+            if message.content_type not in supported_types:
+                return False, f"Тип сообщения '{message.content_type}' не поддерживается"
+            
+            # Проверяем размер текста
+            if message.content_type == 'text' and len(message.text) > 4096:
+                return False, "Текст сообщения слишком длинный (максимум 4096 символов)"
+            
+            # Проверяем подпись к медиа
+            if hasattr(message, 'caption') and message.caption and len(message.caption) > 1024:
+                return False, "Подпись к медиа слишком длинная (максимум 1024 символа)"
+            
+            return True, "Сообщение корректно"
+            
+        except Exception as e:
+            return False, f"Ошибка валидации сообщения: {str(e)}"
+
+# Инициализация менеджера рассылок
+broadcast_manager = BroadcastManager()
+
+class RecoveryManager:
+    """Класс для восстановления после сбоев"""
+    
+    def __init__(self):
+        self.recovery_file = "bot_recovery.json"
+        self.load_recovery_data()
+    
+    def load_recovery_data(self):
+        """Загрузка данных восстановления"""
+        try:
+            if os.path.exists(self.recovery_file):
+                with open(self.recovery_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Восстанавливаем состояния пользователей
+                    global user_states, user_messages
+                    user_states.update(data.get('user_states', {}))
+                    user_messages.update(data.get('user_messages', {}))
+                    logger.info("Recovery data loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load recovery data: {str(e)}")
+    
+    def save_recovery_data(self):
+        """Сохранение данных для восстановления"""
+        try:
+            data = {
+                'user_states': user_states,
+                'user_messages': {k: v for k, v in user_messages.items() 
+                                if not k.endswith('_filtered')},  # Исключаем временные данные
+                'timestamp': time.time()
+            }
+            
+            with open(self.recovery_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to save recovery data: {str(e)}")
+    
+    def cleanup_old_data(self):
+        """Очистка старых данных восстановления"""
+        try:
+            if os.path.exists(self.recovery_file):
+                with open(self.recovery_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    timestamp = data.get('timestamp', 0)
+                    
+                    # Удаляем данные старше 1 часа
+                    if time.time() - timestamp > 3600:
+                        os.remove(self.recovery_file)
+                        logger.info("Old recovery data cleaned up")
+        except Exception as e:
+            logger.error(f"Failed to cleanup recovery data: {str(e)}")
+
+class ChatMonitor:
+    """Класс для мониторинга состояния чатов"""
+    
+    def __init__(self):
+        self.check_interval = 300  # 5 минут
+        self.monitoring_thread = None
+        self.monitoring_active = False
+    
+    def start_monitoring(self):
+        """Запуск мониторинга чатов"""
+        if not self.monitoring_active:
+            self.monitoring_active = True
+            self.monitoring_thread = threading.Thread(target=self._monitor_chats, daemon=True)
+            self.monitoring_thread.start()
+            logger.info("Chat monitoring started")
+    
+    def stop_monitoring(self):
+        """Остановка мониторинга"""
+        self.monitoring_active = False
+        if self.monitoring_thread:
+            self.monitoring_thread.join(timeout=5)
+        logger.info("Chat monitoring stopped")
+    
+    def _monitor_chats(self):
+        """Основной цикл мониторинга"""
+        while self.monitoring_active:
+            try:
+                self._check_inactive_chats()
+                time.sleep(self.check_interval)
+            except Exception as e:
+                logger.error(f"Error in chat monitoring: {str(e)}")
+                time.sleep(60)  # Пауза при ошибке
+    
+    def _check_inactive_chats(self):
+        """Проверка неактивных чатов"""
+        try:
+            # Получаем все чаты из базы данных
+            with sqlite3.connect(db.db_name) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT DISTINCT user_id, chat_id, chat_title, last_checked
+                    FROM user_chats 
+                    WHERE is_active = 1 
+                    AND (last_checked IS NULL OR last_checked < datetime('now', '-1 hour'))
+                    LIMIT 10
+                ''')
+                
+                chats_to_check = cursor.fetchall()
+                
+                for user_id, chat_id, chat_title, last_checked in chats_to_check:
+                    try:
+                        # Проверяем доступность чата
+                        is_admin, _ = ChatHelper.check_bot_admin_status(chat_id)
+                        
+                        # Обновляем статус в базе данных
+                        db.update_chat_admin_status(user_id, chat_id, is_admin)
+                        
+                        logger.debug(f"Checked chat {chat_id}: {'admin' if is_admin else 'not admin'}")
+                        
+                        # Небольшая пауза между проверками
+                        time.sleep(0.5)
+                        
+                    except Exception as e:
+                        # Если чат недоступен, помечаем как неактивный
+                        if "Forbidden" in str(e) or "chat not found" in str(e).lower():
+                            cursor.execute('''
+                                UPDATE user_chats 
+                                SET is_active = 0, last_checked = CURRENT_TIMESTAMP
+                                WHERE user_id = ? AND chat_id = ?
+                            ''', (user_id, chat_id))
+                            conn.commit()
+                            logger.info(f"Marked chat {chat_id} as inactive: {str(e)}")
+                        
+                        time.sleep(1)  # Пауза при ошибке
+                        
+        except Exception as e:
+            logger.error(f"Error checking inactive chats: {str(e)}")
+
+# Инициализация систем восстановления и мониторинга
+recovery_manager = RecoveryManager()
+chat_monitor = ChatMonitor()
 
 class ChatHelper:
     """Вспомогательные функции для работы с чатами"""
@@ -309,6 +730,36 @@ class ChatHelper:
             'channel': '📢 Канал'
         }
         return type_map.get(chat_type, f'❓ {chat_type}')
+    
+    @staticmethod
+    def format_api_error(error_str: str) -> str:
+        """Форматирование ошибок API для пользователя"""
+        if "Forbidden" in error_str:
+            if "bot was kicked" in error_str.lower():
+                return "Бот был исключен из чата"
+            elif "bot was blocked" in error_str.lower():
+                return "Бот заблокирован пользователем"
+            else:
+                return "Нет доступа к чату"
+        elif "Bad Request" in error_str:
+            if "chat not found" in error_str.lower():
+                return "Чат не найден или удален"
+            elif "user not found" in error_str.lower():
+                return "Пользователь не найден"
+            elif "not enough rights" in error_str.lower():
+                return "Недостаточно прав"
+            elif "message is too long" in error_str.lower():
+                return "Сообщение слишком длинное"
+            else:
+                return "Неверный запрос"
+        elif "Too Many Requests" in error_str:
+            return "Превышен лимит запросов (попробуйте позже)"
+        elif "Network" in error_str or "timeout" in error_str.lower():
+            return "Проблемы с сетью"
+        elif "Internal Server Error" in error_str:
+            return "Ошибка сервера Telegram"
+        else:
+            return f"Неизвестная ошибка: {error_str[:50]}"
 
 def create_main_keyboard():
     """Создание основной клавиатуры"""
@@ -673,6 +1124,110 @@ def refresh_chats_callback(call):
     show_user_chats(fake_message)
     bot.answer_callback_query(call.id, "Список обновлен!")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('recheck_chat_'))
+def recheck_chat_callback(call):
+    """Повторная проверка статуса чата"""
+    try:
+        chat_id = int(call.data.split('_')[2])
+        user_id = call.from_user.id
+        
+        # Проверяем статус
+        is_admin, status_text = ChatHelper.check_bot_admin_status(chat_id)
+        
+        # Обновляем в базе данных
+        db.update_chat_admin_status(user_id, chat_id, is_admin)
+        
+        bot.answer_callback_query(
+            call.id, 
+            f"✅ Статус обновлен: {'Админ' if is_admin else 'Не админ'}"
+        )
+        
+        # Обновляем сообщение
+        bot.edit_message_text(
+            f"🔄 **Статус обновлен:**\n\n{status_text}",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'show_all_chats')
+def show_all_chats_callback(call):
+    """Показать все чаты через callback"""
+    fake_message = call.message
+    fake_message.from_user = call.from_user
+    show_user_chats(fake_message)
+    bot.answer_callback_query(call.id, "Список чатов обновлен")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('filter_'))
+def filter_chats_callback(call):
+    """Обработчик фильтрации чатов"""
+    filter_type = call.data.split('_')[1]
+    user_id = call.from_user.id
+    
+    if filter_type == "channel":
+        filtered_chats = db.get_user_chats(user_id, only_admin=True)
+        filtered_chats = [c for c in filtered_chats if c['chat_type'] == 'channel']
+        filter_name = "каналы"
+    elif filter_type == "groups":
+        filtered_chats = db.get_user_chats(user_id, only_admin=True)
+        filtered_chats = [c for c in filtered_chats if c['chat_type'] in ['group', 'supergroup']]
+        filter_name = "группы"
+    else:
+        bot.answer_callback_query(call.id, "Неизвестный фильтр")
+        return
+    
+    if not filtered_chats:
+        bot.answer_callback_query(call.id, f"Нет доступных чатов типа '{filter_name}'")
+        return
+    
+    # Обновляем список чатов для рассылки (временно сохраняем в состоянии)
+    user_messages[f"{user_id}_filtered"] = filtered_chats
+    
+    bot.edit_message_text(
+        f"✅ **Фильтр применен: {filter_name}**\n\n"
+        f"📊 Выбрано чатов: {len(filtered_chats)}\n\n"
+        f"Теперь рассылка будет отправлена только в эти чаты.",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode='Markdown'
+    )
+    
+    bot.answer_callback_query(call.id, f"Применен фильтр: {filter_name}")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'back_to_send')
+def back_to_send_callback(call):
+    """Возврат к отправке сообщения"""
+    user_id = call.from_user.id
+    
+    # Восстанавливаем состояние подтверждения
+    user_states[user_id] = UserStates.WAITING_FOR_CONFIRMATION
+    
+    keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    keyboard.add(
+        types.KeyboardButton("✅ Отправить сейчас"),
+        types.KeyboardButton("⚙️ Настройки рассылки")
+    )
+    keyboard.add(types.KeyboardButton("❌ Отмена"))
+    
+    bot.edit_message_text(
+        "↩️ **Возврат к отправке**\n\nВыберите действие:",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode='Markdown'
+    )
+    
+    bot.send_message(
+        call.message.chat.id,
+        "✅ **Подтвердите отправку:**",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+    
+    bot.answer_callback_query(call.id, "Возврат к отправке")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('settings_'))
 def settings_callback(call):
     """Обработчик настроек"""
@@ -704,10 +1259,29 @@ def handle_all_messages(message):
     user_state = user_states.get(user_id, UserStates.NORMAL)
     
     if user_state == UserStates.WAITING_FOR_CHAT_ID:
-        # Обработка добавления чата
+        # Обработка добавления чата с улучшенной валидацией
+        
+        # Валидация ID чата
+        is_valid, chat_id, validation_message = ChatValidator.validate_chat_id(message.text)
+        
+        if not is_valid:
+            bot.send_message(
+                message.chat.id,
+                f"❌ {validation_message}\n\n"
+                "📝 Правильные форматы ID:\n"
+                "• Личный чат: 123456789\n"
+                "• Группа: -123456789\n"
+                "• Супергруппа: -1001234567890\n"
+                "• Канал: -1001234567890\n\n"
+                "💡 Советы:\n"
+                "• Используйте @userinfobot для получения ID\n"
+                "• ID групп и каналов всегда отрицательные\n"
+                "• Убедитесь, что скопировали ID полностью",
+                reply_markup=create_cancel_keyboard()
+            )
+            return
+        
         try:
-            chat_id = int(message.text.strip())
-            
             # Получаем информацию о чате
             chat_info = ChatHelper.get_chat_info(chat_id)
             
@@ -715,11 +1289,12 @@ def handle_all_messages(message):
                 bot.send_message(
                     message.chat.id,
                     "❌ Не удалось получить информацию о чате.\n\n"
-                    "🔧 Возможные причины:\n"
-                    "• Бот не добавлен в чат\n"
-                    "• Неверный ID чата\n"
-                    "• Чат не существует\n"
-                    "• Бот заблокирован в чате",
+                    "🔧 Возможные решения:\n"
+                    "1️⃣ Убедитесь, что бот добавлен в чат\n"
+                    "2️⃣ Проверьте правильность ID чата\n"
+                    "3️⃣ Для каналов: сделайте канал публичным временно\n"
+                    "4️⃣ Проверьте, не заблокирован ли бот в чате\n\n"
+                    "🔄 Попробуйте еще раз или используйте другой способ получения ID",
                     reply_markup=create_main_keyboard()
                 )
                 user_states.pop(user_id, None)
@@ -739,67 +1314,120 @@ def handle_all_messages(message):
                 is_admin
             )
             
-            # Формируем ответное сообщение
-            response = f"{'✅' if success else '⚠️'} {result_message}\n\n"
-            response += f"📋 Информация о чате:\n"
-            response += f"• Название: {chat_info['title']}\n"
-            response += f"• ID: {chat_id}\n"
-            response += f"• Тип: {ChatHelper.format_chat_type(chat_info['type'])}\n"
+            # Формируем детальный ответ
+            response = f"{'✅' if success else '⚠️'} **{result_message}**\n\n"
+            response += f"📋 **Информация о чате:**\n"
+            response += f"• **Название:** {chat_info['title']}\n"
+            response += f"• **ID:** `{chat_id}`\n"
+            response += f"• **Тип:** {ChatHelper.format_chat_type(chat_info['type'])}\n"
             
             if chat_info.get('username'):
-                response += f"• Username: @{chat_info['username']}\n"
+                response += f"• **Username:** @{chat_info['username']}\n"
                 
             if chat_info.get('member_count', 0) > 0:
-                response += f"• Участников: {chat_info['member_count']}\n"
+                response += f"• **Участников:** {chat_info['member_count']}\n"
             
-            response += f"\n🔐 Статус бота:\n{admin_status}"
+            if chat_info.get('description'):
+                desc = chat_info['description'][:100]
+                if len(chat_info['description']) > 100:
+                    desc += "..."
+                response += f"• **Описание:** {desc}\n"
             
+            response += f"\n🔐 **Статус бота:**\n{admin_status}"
+            
+            # Рекомендации на основе статуса
             if not is_admin:
-                response += "\n\n⚠️ Рекомендация: назначьте бота администратором для корректной работы рассылки."
+                response += "\n\n⚠️ **Важно:** Для корректной работы рассылки назначьте бота администратором с правами:\n"
+                response += "• Отправка сообщений\n"
+                response += "• Удаление сообщений (рекомендуется)\n"
+                response += "• Закрепление сообщений (опционально)"
+            else:
+                response += "\n\n✅ **Отлично!** Чат готов для рассылки сообщений."
             
-            bot.send_message(message.chat.id, response, reply_markup=create_main_keyboard())
+            # Создаем inline клавиатуру для быстрых действий
+            keyboard = types.InlineKeyboardMarkup()
+            if not is_admin:
+                keyboard.add(types.InlineKeyboardButton(
+                    "🔄 Перепроверить статус", 
+                    callback_data=f"recheck_chat_{chat_id}"
+                ))
+            keyboard.add(types.InlineKeyboardButton(
+                "📋 Показать все чаты", 
+                callback_data="show_all_chats"
+            ))
+            
+            bot.send_message(message.chat.id, response, 
+                           reply_markup=keyboard, parse_mode='Markdown')
                 
-        except ValueError:
-            bot.send_message(
-                message.chat.id,
-                "❌ Неверный формат ID чата.\n\n"
-                "📝 Правильные форматы:\n"
-                "• Группа: -123456789\n"
-                "• Супергруппа: -1001234567890\n"
-                "• Канал: -1001234567890\n\n"
-                "💡 ID всегда начинается с минуса для групп и каналов",
-                reply_markup=create_cancel_keyboard()
-            )
-            return
         except Exception as e:
+            error_msg = ChatHelper.format_api_error(str(e))
             logger.error(f"Error adding chat {message.text}: {str(e)}")
+            
             bot.send_message(
                 message.chat.id,
-                f"❌ Произошла ошибка при добавлении чата:\n{str(e)}\n\n"
-                "Попробуйте еще раз или обратитесь к администратору.",
-                reply_markup=create_main_keyboard()
+                f"❌ **Ошибка при добавлении чата**\n\n"
+                f"🔍 **Детали:** {error_msg}\n\n"
+                f"🔄 **Что можно сделать:**\n"
+                f"• Проверить правильность ID чата\n"
+                f"• Убедиться, что бот добавлен в чат\n"
+                f"• Попробовать еще раз через несколько минут\n"
+                f"• Обратиться к администратору чата",
+                reply_markup=create_main_keyboard(),
+                parse_mode='Markdown'
             )
         
         user_states.pop(user_id, None)
         
     elif user_state == UserStates.WAITING_FOR_MESSAGE:
-        # Обработка отправки сообщения (поддержка разных типов)
-        user_chats = db.get_user_chats(user_id, only_admin=True)  # Только чаты где бот админ
+        # Валидация сообщения
+        is_valid, validation_message = ChatValidator.validate_message_content(message)
+        
+        if not is_valid:
+            bot.send_message(
+                message.chat.id,
+                f"❌ {validation_message}\n\n"
+                "📝 Поддерживаемые типы:\n"
+                "• Текст (до 4096 символов)\n"
+                "• Изображения с подписью\n"
+                "• Документы, видео, аудио\n"
+                "• Голосовые сообщения\n"
+                "• Стикеры и GIF\n\n"
+                "Попробуйте отправить другое сообщение:",
+                reply_markup=create_cancel_keyboard()
+            )
+            return
+        
+        # Получаем чаты где бот админ
+        user_chats = db.get_user_chats(user_id, only_admin=True)
         
         if not user_chats:
             all_chats = db.get_user_chats(user_id)
             if not all_chats:
                 bot.send_message(
                     message.chat.id,
-                    "❌ У вас нет подключенных чатов.",
-                    reply_markup=create_main_keyboard()
+                    "❌ **У вас нет подключенных чатов**\n\n"
+                    "🔧 Что делать:\n"
+                    "• Нажмите '➕ Добавить чат' для добавления\n"
+                    "• Добавьте бота в нужные чаты как администратора\n"
+                    "• Получите ID чатов и добавьте их в бот",
+                    reply_markup=create_main_keyboard(),
+                    parse_mode='Markdown'
                 )
             else:
+                admin_count = len([c for c in all_chats if c['bot_is_admin']])
                 bot.send_message(
                     message.chat.id,
-                    "❌ У вас нет чатов где бот является администратором.\n"
-                    "Используйте '🔍 Проверить чаты' для обновления статусов.",
-                    reply_markup=create_main_keyboard()
+                    f"❌ **Нет чатов для рассылки**\n\n"
+                    f"📊 **Статус ваших чатов:**\n"
+                    f"• Всего подключено: {len(all_chats)}\n"
+                    f"• Бот является админом: {admin_count}\n"
+                    f"• Доступно для рассылки: {admin_count}\n\n"
+                    f"🔧 **Решение:**\n"
+                    f"• Используйте '🔍 Проверить чаты' для обновления\n"
+                    f"• Назначьте бота администратором в нужных чатах\n"
+                    f"• Проверьте права бота в настройках чатов",
+                    reply_markup=create_main_keyboard(),
+                    parse_mode='Markdown'
                 )
             user_states.pop(user_id, None)
             return
@@ -807,152 +1435,211 @@ def handle_all_messages(message):
         # Сохраняем сообщение для отправки
         user_messages[user_id] = message
         
-        # Показываем превью и запрашиваем подтверждение
-        preview_text = f"📋 Готово к отправке в {len(user_chats)} чат(ов):\n\n"
+        # Группируем чаты по типам для красивого отображения
+        chat_groups = {}
+        for chat in user_chats:
+            chat_type = chat['chat_type']
+            if chat_type not in chat_groups:
+                chat_groups[chat_type] = []
+            chat_groups[chat_type].append(chat)
         
-        # Показываем список чатов
-        for i, chat in enumerate(user_chats[:5], 1):
-            preview_text += f"{i}. {chat['chat_title']}\n"
+        # Формируем превью с группировкой
+        preview_text = f"📋 **Готово к отправке в {len(user_chats)} чат(ов):**\n\n"
         
-        if len(user_chats) > 5:
-            preview_text += f"... и еще {len(user_chats) - 5} чатов\n"
+        for chat_type, chats in chat_groups.items():
+            type_emoji = {
+                'group': '👥',
+                'supergroup': '👥',
+                'channel': '📢',
+                'private': '👤'
+            }.get(chat_type, '💬')
+            
+            preview_text += f"{type_emoji} **{ChatHelper.format_chat_type(chat_type)}** ({len(chats)}):\n"
+            
+            for chat in chats[:3]:  # Показываем первые 3 чата каждого типа
+                preview_text += f"• {chat['chat_title']}\n"
+            
+            if len(chats) > 3:
+                preview_text += f"• ... и еще {len(chats) - 3}\n"
+            preview_text += "\n"
         
-        preview_text += f"\n📝 Содержимое:\n"
+        # Информация о сообщении
+        preview_text += f"📝 **Содержимое:**\n"
         
-        # Определяем тип сообщения
         if message.content_type == 'text':
-            preview_text += f"Текст: {message.text[:100]}"
-            if len(message.text) > 100:
-                preview_text += "..."
+            text_preview = message.text[:150]
+            if len(message.text) > 150:
+                text_preview += "..."
+            preview_text += f"📄 Текст: {text_preview}\n"
         elif message.content_type == 'photo':
             preview_text += "🖼️ Изображение"
             if message.caption:
-                preview_text += f" с подписью: {message.caption[:50]}"
-                if len(message.caption) > 50:
-                    preview_text += "..."
+                cap_preview = message.caption[:80]
+                if len(message.caption) > 80:
+                    cap_preview += "..."
+                preview_text += f" с подписью: {cap_preview}"
+            preview_text += "\n"
         elif message.content_type == 'document':
-            preview_text += f"📁 Документ: {message.document.file_name or 'файл'}"
+            file_name = message.document.file_name or 'файл'
+            file_size = message.document.file_size
+            size_mb = file_size / (1024 * 1024) if file_size else 0
+            preview_text += f"📁 Документ: {file_name}"
+            if size_mb > 0:
+                preview_text += f" ({size_mb:.1f} МБ)"
+            preview_text += "\n"
         elif message.content_type == 'video':
-            preview_text += "🎥 Видео"
+            duration = getattr(message.video, 'duration', 0)
+            preview_text += f"🎥 Видео"
+            if duration > 0:
+                preview_text += f" ({duration//60}:{duration%60:02d})"
+            preview_text += "\n"
         elif message.content_type == 'audio':
-            preview_text += "🎵 Аудио"
+            duration = getattr(message.audio, 'duration', 0)
+            title = getattr(message.audio, 'title', 'аудио')
+            preview_text += f"🎵 Аудио: {title}"
+            if duration > 0:
+                preview_text += f" ({duration//60}:{duration%60:02d})"
+            preview_text += "\n"
         elif message.content_type == 'voice':
-            preview_text += "🎤 Голосовое сообщение"
+            duration = getattr(message.voice, 'duration', 0)
+            preview_text += f"🎤 Голосовое"
+            if duration > 0:
+                preview_text += f" ({duration}с)"
+            preview_text += "\n"
+        elif message.content_type == 'sticker':
+            emoji = getattr(message.sticker, 'emoji', '🎭')
+            preview_text += f"{emoji} Стикер\n"
         else:
-            preview_text += f"📎 {message.content_type}"
+            preview_text += f"📎 {message.content_type.title()}\n"
         
-        preview_text += "\n\n✅ Подтвердите отправку:"
+        # Оценка времени рассылки
+        estimated_time = len(user_chats) * 0.2  # примерно 0.2 сек на чат
+        if estimated_time > 60:
+            time_str = f"{estimated_time//60:.0f}м {estimated_time%60:.0f}с"
+        else:
+            time_str = f"{estimated_time:.0f}с"
+        
+        preview_text += f"\n⏱️ **Примерное время:** {time_str}\n"
+        preview_text += f"📊 **Режим:** Умная рассылка с контролем скорости\n\n"
+        preview_text += "✅ **Подтвердите отправку:**"
         
         user_states[user_id] = UserStates.WAITING_FOR_CONFIRMATION
-        bot.send_message(message.chat.id, preview_text, reply_markup=create_confirmation_keyboard())
+        
+        # Создаем расширенную клавиатуру подтверждения
+        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        keyboard.add(
+            types.KeyboardButton("✅ Отправить сейчас"),
+            types.KeyboardButton("⚙️ Настройки рассылки")
+        )
+        keyboard.add(types.KeyboardButton("❌ Отмена"))
+        
+        bot.send_message(message.chat.id, preview_text, 
+                        reply_markup=keyboard, parse_mode='Markdown')
         
     elif user_state == UserStates.WAITING_FOR_CONFIRMATION:
-        if message.text == "✅ Отправить":
-            # Выполняем массовую рассылку
+        if message.text in ["✅ Отправить сейчас", "✅ Отправить"]:
+            # Запускаем улучшенную массовую рассылку
             original_message = user_messages.get(user_id)
             if not original_message:
                 bot.send_message(
                     message.chat.id,
-                    "❌ Ошибка: сообщение не найдено. Попробуйте еще раз.",
-                    reply_markup=create_main_keyboard()
+                    "❌ **Ошибка:** сообщение не найдено. Попробуйте еще раз.",
+                    reply_markup=create_main_keyboard(),
+                    parse_mode='Markdown'
                 )
                 user_states.pop(user_id, None)
                 return
             
             user_chats = db.get_user_chats(user_id, only_admin=True)
             
+            if not user_chats:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ **Нет доступных чатов для рассылки**\n\n"
+                    "Возможно, статус чатов изменился. Проверьте чаты и попробуйте снова.",
+                    reply_markup=create_main_keyboard(),
+                    parse_mode='Markdown'
+                )
+                user_states.pop(user_id, None)
+                user_messages.pop(user_id, None)
+                return
+            
+            # Создаем сообщение о начале рассылки
             status_message = bot.send_message(
                 message.chat.id,
-                f"📤 Отправляю сообщение в {len(user_chats)} чат(ов)..."
+                f"🚀 **Запускаю умную рассылку...**\n\n"
+                f"📋 Чатов для обработки: {len(user_chats)}\n"
+                f"📊 Режим: Контроль скорости активен\n"
+                f"⏱️ Начало: {datetime.now().strftime('%H:%M:%S')}",
+                parse_mode='Markdown'
             )
             
-            success_count = 0
-            failed_count = 0
-            failed_chats = []
+            # Запускаем рассылку через BroadcastManager
+            broadcast_id = broadcast_manager.start_broadcast(
+                user_id, original_message, user_chats, 
+                status_message.message_id, message.chat.id
+            )
             
-            # Функция для отправки разных типов сообщений
-            def send_message_to_chat(chat_id, msg):
-                if msg.content_type == 'text':
-                    return bot.send_message(chat_id, msg.text)
-                elif msg.content_type == 'photo':
-                    return bot.send_photo(chat_id, msg.photo[-1].file_id, caption=msg.caption)
-                elif msg.content_type == 'document':
-                    return bot.send_document(chat_id, msg.document.file_id, caption=msg.caption)
-                elif msg.content_type == 'video':
-                    return bot.send_video(chat_id, msg.video.file_id, caption=msg.caption)
-                elif msg.content_type == 'audio':
-                    return bot.send_audio(chat_id, msg.audio.file_id, caption=msg.caption)
-                elif msg.content_type == 'voice':
-                    return bot.send_voice(chat_id, msg.voice.file_id)
-                elif msg.content_type == 'video_note':
-                    return bot.send_video_note(chat_id, msg.video_note.file_id)
-                elif msg.content_type == 'sticker':
-                    return bot.send_sticker(chat_id, msg.sticker.file_id)
-                else:
-                    raise Exception(f"Неподдерживаемый тип сообщения: {msg.content_type}")
-            
-            # Отправляем сообщение во все чаты с небольшой задержкой
-            for i, chat in enumerate(user_chats):
-                try:
-                    send_message_to_chat(chat['chat_id'], original_message)
-                    success_count += 1
-                    
-                    # Небольшая задержка между отправками для избежания лимитов
-                    if i < len(user_chats) - 1:
-                        time.sleep(0.1)
-                        
-                except Exception as e:
-                    failed_count += 1
-                    error_msg = str(e)
-                    if "Forbidden" in error_msg:
-                        error_msg = "Бот заблокирован или удален из чата"
-                    elif "Bad Request" in error_msg:
-                        error_msg = "Неверный запрос или файл недоступен"
-                    
-                    failed_chats.append(f"{chat['chat_title']}: {error_msg}")
-                    logger.error(f"Failed to send message to {chat['chat_id']}: {str(e)}")
-            
-            # Сохраняем историю
-            chat_ids = [chat['chat_id'] for chat in user_chats]
-            message_content = original_message.text or f"[{original_message.content_type}]"
-            db.save_message_history(user_id, message_content, chat_ids, success_count, failed_count)
-            
-            # Отправляем отчет
-            report = f"📊 Отчет о рассылке:\n\n"
-            report += f"✅ Успешно отправлено: {success_count}\n"
-            report += f"❌ Не удалось отправить: {failed_count}\n"
-            
-            if success_count > 0:
-                success_rate = (success_count / (success_count + failed_count)) * 100
-                report += f"📈 Успешность: {success_rate:.1f}%\n"
-            
-            if failed_chats:
-                report += f"\n🚫 Ошибки:\n"
-                for error in failed_chats[:3]:  # Показываем только первые 3 ошибки
-                    report += f"• {error}\n"
-                if len(failed_chats) > 3:
-                    report += f"... и еще {len(failed_chats) - 3} ошибок"
-            
-            bot.edit_message_text(report, message.chat.id, status_message.message_id)
-            
-            # Очищаем состояние
+            # Очищаем состояние пользователя
             user_states.pop(user_id, None)
             user_messages.pop(user_id, None)
             
-            # Возвращаем главную клавиатуру
+            # Отправляем главное меню
             bot.send_message(
                 message.chat.id,
-                "✅ Рассылка завершена! Что делаем дальше?",
-                reply_markup=create_main_keyboard()
+                "📤 **Рассылка запущена в фоновом режиме!**\n\n"
+                "Вы получите уведомление о завершении.\n"
+                "Можете продолжать пользоваться ботом.",
+                reply_markup=create_main_keyboard(),
+                parse_mode='Markdown'
             )
+            
+        elif message.text == "⚙️ Настройки рассылки":
+            # Показываем настройки рассылки
+            settings_text = "⚙️ **Настройки рассылки:**\n\n"
+            
+            user_chats = db.get_user_chats(user_id, only_admin=True)
+            chat_groups = {}
+            for chat in user_chats:
+                chat_type = chat['chat_type']
+                if chat_type not in chat_groups:
+                    chat_groups[chat_type] = []
+                chat_groups[chat_type].append(chat)
+            
+            settings_text += "📊 **Доступные фильтры:**\n"
+            for chat_type, chats in chat_groups.items():
+                type_name = ChatHelper.format_chat_type(chat_type)
+                settings_text += f"• {type_name}: {len(chats)} чат(ов)\n"
+            
+            settings_text += "\n🔧 **Выберите действие:**"
+            
+            keyboard = types.InlineKeyboardMarkup()
+            keyboard.add(types.InlineKeyboardButton(
+                "📢 Только каналы", callback_data="filter_channel"
+            ))
+            keyboard.add(types.InlineKeyboardButton(
+                "👥 Только группы", callback_data="filter_groups"
+            ))
+            keyboard.add(types.InlineKeyboardButton(
+                "🎯 Выбрать чаты", callback_data="select_chats"
+            ))
+            keyboard.add(types.InlineKeyboardButton(
+                "↩️ Назад к отправке", callback_data="back_to_send"
+            ))
+            
+            bot.send_message(message.chat.id, settings_text, 
+                           reply_markup=keyboard, parse_mode='Markdown')
+            
         else:
             # Отмена отправки
             user_states.pop(user_id, None)
             user_messages.pop(user_id, None)
             bot.send_message(
                 message.chat.id,
-                "❌ Отправка отменена.",
-                reply_markup=create_main_keyboard()
+                "❌ **Отправка отменена**\n\n"
+                "Сообщение не было отправлено в чаты.",
+                reply_markup=create_main_keyboard(),
+                parse_mode='Markdown'
             )
         
     else:
@@ -963,10 +1650,58 @@ def handle_all_messages(message):
             reply_markup=create_main_keyboard()
         )
 
+def save_state_periodically():
+    """Периодическое сохранение состояния"""
+    while True:
+        try:
+            time.sleep(30)  # Сохраняем каждые 30 секунд
+            recovery_manager.save_recovery_data()
+        except Exception as e:
+            logger.error(f"Error saving state: {str(e)}")
+
+def cleanup_and_exit():
+    """Корректное завершение работы"""
+    logger.info("Shutting down bot...")
+    
+    # Останавливаем мониторинг
+    chat_monitor.stop_monitoring()
+    
+    # Сохраняем состояние
+    recovery_manager.save_recovery_data()
+    
+    # Очищаем старые данные
+    recovery_manager.cleanup_old_data()
+    
+    logger.info("Bot shutdown complete")
+
 if __name__ == "__main__":
-    logger.info("Запуск бота...")
+    logger.info("🚀 Запуск улучшенного телеграм бота...")
+    
     try:
+        # Запускаем мониторинг чатов
+        chat_monitor.start_monitoring()
+        
+        # Запускаем поток автосохранения
+        save_thread = threading.Thread(target=save_state_periodically, daemon=True)
+        save_thread.start()
+        
+        logger.info("✅ Все системы запущены успешно")
+        logger.info("📊 Активные компоненты:")
+        logger.info("   • Основной бот")
+        logger.info("   • Система рассылок")
+        logger.info("   • Мониторинг чатов")
+        logger.info("   • Система восстановления")
+        logger.info("   • Автосохранение состояний")
+        
+        # Основной цикл бота
         bot.infinity_polling(none_stop=True)
+        
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал остановки")
+        cleanup_and_exit()
     except Exception as e:
         logger.error(f"Критическая ошибка: {str(e)}")
+        cleanup_and_exit()
         raise
+    finally:
+        cleanup_and_exit()
