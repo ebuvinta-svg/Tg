@@ -761,6 +761,19 @@ class ChatHelper:
         else:
             return f"Неизвестная ошибка: {error_str[:50]}"
 
+def is_private_chat(message) -> bool:
+    """Проверка, является ли чат личным"""
+    return message.chat.type == 'private'
+
+def private_chat_only(func):
+    """Декоратор для ограничения функций только личными чатами"""
+    def wrapper(message):
+        if not is_private_chat(message):
+            # В групповых чатах бот молчит
+            return
+        return func(message)
+    return wrapper
+
 def create_main_keyboard():
     """Создание основной клавиатуры"""
     keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -815,51 +828,74 @@ def create_cancel_keyboard():
     return keyboard
 
 @bot.message_handler(commands=['start'])
+@private_chat_only
 def start_command(message):
     """Обработчик команды /start"""
     user = message.from_user
     db.add_user(user.id, user.username, user.first_name, user.last_name)
     
     welcome_text = f"""
-👋 Добро пожаловать, {user.first_name}!
+👋 **Добро пожаловать, {user.first_name}!**
 
 Этот бот поможет вам управлять несколькими чатами и отправлять сообщения сразу во все подключенные чаты.
 
-🔧 Основные функции:
-• Подключение нескольких чатов
-• Массовая рассылка сообщений
-• Управление списком чатов
-• Просмотр статистики
+🔧 **Основные функции:**
+• Подключение неограниченного количества чатов
+• Умная массовая рассылка с контролем скорости
+• Поддержка всех типов медиа (фото, видео, документы)
+• Детальная аналитика и статистика
+• Автоматический мониторинг состояния чатов
 
-Для начала работы добавьте чаты с помощью кнопки "➕ Добавить чат"
+🚀 **Начать работу:**
+1. Добавьте бота в нужные чаты как администратора
+2. Используйте "➕ Добавить чат" для подключения
+3. Отправляйте сообщения через "📝 Отправить сообщение"
+
+💡 **Важно:** Все управление происходит только в личных сообщениях с ботом!
 """
     
-    bot.send_message(message.chat.id, welcome_text, reply_markup=create_main_keyboard())
+    bot.send_message(message.chat.id, welcome_text, 
+                    reply_markup=create_main_keyboard(), 
+                    parse_mode='Markdown')
 
 @bot.message_handler(commands=['help'])
+@private_chat_only
 def help_command(message):
     """Обработчик команды /help"""
     help_text = """
-🆘 Помощь по использованию бота:
+🆘 **Помощь по использованию бота:**
 
-📝 Отправить сообщение - отправляет ваше сообщение во все подключенные чаты
-📋 Мои чаты - показывает список ваших чатов
-➕ Добавить чат - добавляет новый чат для рассылки
-❌ Удалить чат - удаляет чат из списка рассылки
-📊 Статистика - показывает статистику использования
-ℹ️ Помощь - показывает это сообщение
+📝 **Отправить сообщение** - отправляет ваше сообщение во все подключенные чаты
+📋 **Мои чаты** - показывает список ваших чатов с детальной информацией
+➕ **Добавить чат** - добавляет новый чат для рассылки
+❌ **Удалить чат** - удаляет чат из списка рассылки
+🔍 **Проверить чаты** - проверяет статус бота во всех чатах
+📊 **Статистика** - показывает детальную статистику использования
+⚙️ **Настройки** - дополнительные настройки бота
+ℹ️ **Помощь** - показывает это сообщение
 
-💡 Как добавить чат:
+💡 **Как добавить чат:**
 1. Нажмите "➕ Добавить чат"
 2. Добавьте бота в нужный чат как администратора
-3. Отправьте ID чата (можно получить через @userinfobot)
+3. Отправьте ID чата или перешлите сообщение из чата
 
-⚠️ Важно: бот должен быть администратором в чатах для отправки сообщений!
+🎯 **Способы получения ID чата:**
+• Перешлите любое сообщение из чата боту
+• Используйте @userinfobot в целевом чате
+• Добавьте @RawDataBot в чат временно
+
+⚠️ **Важно:** 
+• Бот должен быть администратором в чатах для отправки сообщений
+• Все управление происходит только в личных сообщениях
+• В групповых чатах бот не реагирует на команды
 """
     
-    bot.send_message(message.chat.id, help_text, reply_markup=create_main_keyboard())
+    bot.send_message(message.chat.id, help_text, 
+                    reply_markup=create_main_keyboard(), 
+                    parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: message.text == "📋 Мои чаты")
+@private_chat_only
 def show_user_chats(message):
     """Показать чаты пользователя"""
     user_chats = db.get_user_chats(message.from_user.id)
@@ -898,41 +934,53 @@ def show_user_chats(message):
     bot.send_message(message.chat.id, chat_list, reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text == "➕ Добавить чат")
+@private_chat_only
 def add_chat_request(message):
     """Запрос на добавление чата"""
     user_states[message.from_user.id] = UserStates.WAITING_FOR_CHAT_ID
     
     instruction_text = """
-➕ Добавление нового чата
+➕ **Добавление нового чата**
 
-🔧 Пошаговая инструкция:
+🔧 **Пошаговая инструкция:**
 
-1️⃣ Добавьте этого бота в нужный чат/канал
-2️⃣ Назначьте бота администратором с правами:
-   • Отправка сообщений
-   • Удаление сообщений (опционально)
-   • Закрепление сообщений (опционально)
+1️⃣ **Добавьте бота в чат:**
+   • Откройте нужный чат/канал
+   • Добавьте этого бота в участники
+   • Назначьте бота администратором
 
-3️⃣ Получите ID чата одним из способов:
-   • Перешлите любое сообщение из чата боту @userinfobot
-   • Для каналов: добавьте @userinfobot в канал
-   • Используйте @RawDataBot
+2️⃣ **Права администратора:**
+   ✅ Отправка сообщений (обязательно)
+   ✅ Удаление сообщений (рекомендуется)
+   ✅ Закрепление сообщений (опционально)
 
-4️⃣ Отправьте ID чата в ответ на это сообщение
+3️⃣ **Отправьте ID чата одним из способов:**
 
-📝 Примеры форматов ID:
-• Группа: -123456789
-• Супергруппа: -1001234567890  
-• Канал: -1001234567890
+🎯 **СПОСОБ 1 (Рекомендуемый):**
+   • Перешлите любое сообщение из целевого чата сюда
+   • Бот автоматически определит ID чата
 
-💡 Совет: ID всегда начинается с минуса для групп и каналов
+🎯 **СПОСОБ 2:**
+   • Отправьте ID чата числом
+   • Примеры: `-123456789` или `-1001234567890`
 
-Отправьте ID чата:
+🎯 **СПОСОБ 3:**
+   • Используйте @userinfobot в целевом чате
+   • Скопируйте ID и отправьте сюда
+
+💡 **Подсказки:**
+• ID групп и каналов всегда отрицательные
+• Можете просто переслать сообщение - это проще всего!
+
+**Отправьте ID чата или перешлите сообщение:**
 """
     
-    bot.send_message(message.chat.id, instruction_text, reply_markup=create_cancel_keyboard())
+    bot.send_message(message.chat.id, instruction_text, 
+                    reply_markup=create_cancel_keyboard(),
+                    parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: message.text == "❌ Удалить чат")
+@private_chat_only
 def remove_chat_request(message):
     """Запрос на удаление чата"""
     user_chats = db.get_user_chats(message.from_user.id)
@@ -979,6 +1027,7 @@ def remove_chat_callback(call):
         bot.answer_callback_query(call.id, "Ошибка при удалении чата")
 
 @bot.message_handler(func=lambda message: message.text == "📝 Отправить сообщение")
+@private_chat_only
 def send_message_request(message):
     """Запрос на отправку сообщения"""
     user_chats = db.get_user_chats(message.from_user.id)
@@ -1002,6 +1051,7 @@ def send_message_request(message):
     bot.send_message(message.chat.id, chat_list, reply_markup=create_cancel_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == "🔍 Проверить чаты")
+@private_chat_only
 def check_chats_status(message):
     """Проверить статус всех чатов пользователя"""
     user_chats = db.get_user_chats(message.from_user.id)
@@ -1038,6 +1088,7 @@ def check_chats_status(message):
     bot.edit_message_text(report, message.chat.id, status_msg.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Статистика")
+@private_chat_only
 def show_statistics(message):
     """Показать расширенную статистику пользователя"""
     stats = db.get_user_statistics(message.from_user.id)
@@ -1078,6 +1129,7 @@ def show_statistics(message):
     bot.send_message(message.chat.id, stats_text, reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text == "❌ Отмена")
+@private_chat_only
 def cancel_operation(message):
     """Отмена текущей операции"""
     user_states.pop(message.from_user.id, None)
@@ -1088,6 +1140,7 @@ def cancel_operation(message):
     )
 
 @bot.message_handler(func=lambda message: message.text == "⚙️ Настройки")
+@private_chat_only
 def settings_menu(message):
     """Меню настроек"""
     settings_text = """
@@ -1105,6 +1158,7 @@ def settings_menu(message):
     bot.send_message(message.chat.id, settings_text, reply_markup=keyboard)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Помощь")
+@private_chat_only
 def help_button(message):
     """Обработчик кнопки помощи"""
     help_command(message)
