@@ -13,3 +13,19 @@ class AdminFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
         return bool(message.from_user and message.from_user.id in self._admins)
 
+
+class ChatAdminOnly(BaseFilter):
+    def __init__(self) -> None:
+        pass
+
+    async def __call__(self, message: Message) -> bool:
+        if message.chat.type not in {"group", "supergroup"}:
+            return False
+        if not message.from_user:
+            return False
+        try:
+            member = await message.bot.get_chat_member(chat_id=message.chat.id, user_id=message.from_user.id)
+            return member.status in {"administrator", "creator"}
+        except Exception:
+            return False
+

@@ -17,6 +17,7 @@ from .middlewares import SimpleRateLimiter, ActivityTrackingMiddleware
 from .stats import STATS
 from .config import load_settings
 from .handlers import create_admin_router, create_public_router
+from .group_handlers import create_group_router
 
 
 async def _on_startup(bot: Bot, admins: list[int]) -> None:
@@ -48,6 +49,7 @@ async def _create_dispatcher(settings) -> Dispatcher:
     dp.update.middleware(ActivityTrackingMiddleware())
     dp.update.middleware(SimpleRateLimiter(requests_per_user_per_minute=30))
     dp.include_router(create_public_router())
+    dp.include_router(create_group_router())
     dp.include_router(create_admin_router(settings.admins))
     return dp
 

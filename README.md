@@ -16,3 +16,14 @@ Features
 - Commands: /start, /help, /ping, /echo, /admin, /id, /stats, /broadcast (admins)
 - Runtime stats: uptime, unique users, total messages
 - Syntax check: `make test`
+ 
+Group management
+----------------
+- `/settings` — показать настройки чата
+- `/welcome on|off [--pin] [текст]` — приветствие новых участников
+- `/rules <текст>` — задать правила; `/getrules` — показать
+- `/slowmode <сек>` — ограничение частоты сообщений
+- `/warn` — предупредить (в ответ на сообщение)
+- `/mute [минуты]` — временно ограничить отправку сообщений (в ответ)
+- `/ban` — бан пользователя (в ответ)
+- `/pin` — закрепить сообщение (в ответ)
