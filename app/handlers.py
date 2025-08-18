@@ -30,7 +30,9 @@ def create_public_router() -> Router:
             "/start — приветствие\n"
             "/help — помощь\n"
             "/ping — проверить отклик\n"
-            "/echo <текст> — повторить текст"
+            "/echo <текст> — повторить текст\n"
+            "/id — ваш ID и ID чата\n"
+            "/stats — статистика"
         )
 
     @router.message(Command(commands=["ping"]))
@@ -51,7 +53,8 @@ def create_public_router() -> Router:
     @router.message(F.text)
     async def any_text(message: Message) -> None:
         logger.info("Message from %s: %s", message.from_user.id if message.from_user else None, message.text)
-        await message.answer("Не понял. Напиши /help")
+        if message.chat.type == "private":
+            await message.answer("Не понял. Напиши /help")
 
     return router
 
@@ -77,12 +80,23 @@ def create_admin_router(admin_ids: List[int]) -> Router:
         text = command.args
         sent = 0
         errors = 0
-        for uid in list(STATS.unique_user_ids):
+        # Send in small batches to avoid hitting limits
+        uids = list(STATS.unique_user_ids)
+        chunk_size = 25
+        for i in range(0, len(uids), chunk_size):
+            chunk = uids[i:i+chunk_size]
+            for uid in chunk:
+                try:
+                    await message.bot.send_message(uid, text)
+                    sent += 1
+                except Exception:
+                    errors += 1
+            # Tiny pause between chunks
             try:
-                await message.bot.send_message(uid, text)
-                sent += 1
+                from asyncio import sleep
+                await sleep(0.2)
             except Exception:
-                errors += 1
+                pass
         await message.answer(f"Рассылка завершена. Успешно: {sent}, ошибок: {errors}.")
 
     @router.message(Command(commands=["stats"]))

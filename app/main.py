@@ -12,11 +12,13 @@ from .config import load_settings
 from .handlers import create_admin_router, create_public_router
 from .logging_setup import configure_logging
 from .middlewares import SimpleRateLimiter, ActivityTrackingMiddleware
+from .stats import STATS
 
 
 async def _on_startup(bot: Bot) -> None:
     me = await bot.get_me()
     logging.getLogger(__name__).info("Bot started as @%s (%s)", me.username, me.id)
+    STATS.mark_started()
     # Set command descriptions for better discoverability
     try:
         await bot.set_my_commands([
@@ -48,10 +50,11 @@ async def run() -> None:
     dp = await _create_dispatcher(settings)
 
     await _on_startup(bot)
-    # Global error logging
+    # Global error logging for aiogram v3
     @dp.errors()
     async def on_error(event, exception):
         logging.getLogger(__name__).exception("Unhandled error: %s", exception)
+        # Do not stop other middlewares/handlers completely
         return True
 
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

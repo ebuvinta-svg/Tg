@@ -1,24 +1,18 @@
-PYTHON ?= python3
-PIP ?= pip3
+PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
+PIP := $(shell [ -x .venv/bin/pip ] && echo .venv/bin/pip || echo pip3)
 
-.PHONY: install run dev test docker-build docker-run
+.PHONY: install run dev test
 
 install:
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
+	python3 -m venv .venv || true
+	[ -x .venv/bin/pip ] && .venv/bin/pip install -r requirements.txt || pip3 install --user --break-system-packages -r requirements.txt
 
 run:
-	$(PYTHON) -m app.main
+	$(PY) -m app.main
 
 dev:
-	BOT_LOG_LEVEL=DEBUG $(PYTHON) -m app.main
+	BOT_LOG_LEVEL=DEBUG $(PY) -m app.main
 
 test:
-	$(PYTHON) -m compileall -q app
+	$(PY) -m compileall -q app
 	@echo "Syntax OK"
-
-docker-build:
-	docker build -t improved-bot:latest .
-
-docker-run:
-	docker run --rm -it --env-file .env improved-bot:latest
