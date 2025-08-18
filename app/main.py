@@ -1,21 +1,25 @@
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from typing import Any, Dict, List, Optional
 
-from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import BotCommand
+from aiogram.utils import exceptions
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from .config import load_settings
-from .handlers import create_admin_router, create_public_router
 from .logging_setup import configure_logging
 from .middlewares import SimpleRateLimiter, ActivityTrackingMiddleware
 from .stats import STATS
+from .config import load_settings
+from .handlers import create_admin_router, create_public_router
 
 
-async def _on_startup(bot: Bot) -> None:
+async def _on_startup(bot: Bot, admins: list[int]) -> None:
     me = await bot.get_me()
     logging.getLogger(__name__).info("Bot started as @%s (%s)", me.username, me.id)
     STATS.mark_started()
@@ -31,6 +35,12 @@ async def _on_startup(bot: Bot) -> None:
         ])
     except Exception:
         pass
+    # Notify admins about startup
+    for admin_id in admins:
+        try:
+            await bot.send_message(admin_id, f"Бот запущен: @{me.username} ({me.id})")
+        except Exception:
+            pass
 
 
 async def _create_dispatcher(settings) -> Dispatcher:
@@ -49,7 +59,7 @@ async def run() -> None:
     bot = Bot(token=settings.bot_token, parse_mode=ParseMode.HTML)
     dp = await _create_dispatcher(settings)
 
-    await _on_startup(bot)
+    await _on_startup(bot, settings.admins)
     # Global error logging for aiogram v3
     @dp.errors()
     async def on_error(event, exception):

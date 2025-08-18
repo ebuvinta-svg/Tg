@@ -6,9 +6,10 @@ from typing import List
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import Message, ContentType
 from aiogram.utils.chat_action import ChatActionSender
 from .stats import STATS
+from .filters import AdminFilter
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ def create_public_router() -> Router:
             return
         await message.answer(command.args)
 
+    # Reply with info for common attachments
+    @router.message(F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.VIDEO}))
+    async def any_media(message: Message) -> None:
+        await message.reply("Медиа получено ✅")
+
     @router.message(F.text)
     async def any_text(message: Message) -> None:
         logger.info("Message from %s: %s", message.from_user.id if message.from_user else None, message.text)
@@ -61,23 +67,30 @@ def create_public_router() -> Router:
 
 def create_admin_router(admin_ids: List[int]) -> Router:
     router = Router(name="admin")
+    router.message.filter(AdminFilter(admin_ids))
 
     @router.message(Command(commands=["admin"]))
     async def cmd_admin(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in admin_ids:
-            await message.answer("Только для админов")
-            return
         await message.answer("Админка доступна. Все работает ✅")
 
     @router.message(Command(commands=["broadcast"]))
     async def cmd_broadcast(message: Message, command: CommandObject) -> None:
-        if not message.from_user or message.from_user.id not in admin_ids:
-            await message.answer("Только для админов")
-            return
         if not command.args:
             await message.answer("Использование: /broadcast <текст>")
             return
-        text = command.args
+        # Flags: --silent (disable notifications), --parse=HTML|Markdown
+        args = command.args
+        silent = "--silent" in args
+        parse = None
+        if "--parse=" in args:
+            try:
+                parse = args.split("--parse=")[1].split()[0].upper()
+            except Exception:
+                parse = None
+        text = args.replace("--silent", "")
+        if parse:
+            text = text.replace(f"--parse={parse}", "")
+        text = text.strip()
         sent = 0
         errors = 0
         # Send in small batches to avoid hitting limits
@@ -87,7 +100,7 @@ def create_admin_router(admin_ids: List[int]) -> Router:
             chunk = uids[i:i+chunk_size]
             for uid in chunk:
                 try:
-                    await message.bot.send_message(uid, text)
+                    await message.bot.send_message(uid, text, disable_notification=silent, parse_mode=parse)
                     sent += 1
                 except Exception:
                     errors += 1
